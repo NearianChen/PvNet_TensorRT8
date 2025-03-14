@@ -73,14 +73,14 @@ void filterForegroundPoints(
 namespace ransacVoting{
 
     void ransacVotingCUDAV2(
-        cv::Mat& mask, std::vector<cv::Mat>& vertex, 
-        std::vector<cv::Point2f>& output_points, 
-        int round_hyp_num, float inlier_thresh, float confidence, 
+        cv::Mat& mask, std::vector<cv::Mat>& vertex,
+        std::vector<cv::Point2f>& output_points,
+        int round_hyp_num, float inlier_thresh, float confidence,
         int max_iter, int min_num, int max_num
     ) {
         std::mt19937 rng(0);
-        // std::random_device rd;  
-        // std::mt19937 rng(rd()); 
+        // std::random_device rd;
+        // std::mt19937 rng(rd());
         std::vector<cv::Point2f> coords;
         cv::findNonZero(mask, coords);
         int tn = coords.size();
@@ -133,7 +133,7 @@ namespace ransacVoting{
             cudaError_t err;
             err = cudaMalloc(&d_coords, tn*2*sizeof(float));
             if (err != cudaSuccess) {
-                std::cerr << "cudaMalloc d_direct failed: " 
+                std::cerr << "cudaMalloc d_direct failed: "
                         << cudaGetErrorString(err) << std::endl;
                 exit(EXIT_FAILURE);
             }
@@ -163,7 +163,7 @@ namespace ransacVoting{
                 }
                 // std::cout << "Launching hypothesis generation with parameters:"
                 //         << " h=" << h << " w=" << w
-                //         << " tn=" << tn << " hn=" << hn << std::endl;            
+                //         << " tn=" << tn << " hn=" << hn << std::endl;
                 cudaMemcpy(d_idxs, h_idxs.data(), hn*2*sizeof(int), cudaMemcpyHostToDevice);
 
                 // 2. 生成假设点
@@ -189,7 +189,7 @@ namespace ransacVoting{
                 // 6. 更新全局最佳结果
                 if (cur_ratio > best_ratio) {
                     best_ratio = cur_ratio;
-                    
+
                     // 获取对应的假设点坐标
                     std::vector<float> h_hypo_pts(hn*2);
                     cudaMemcpy(h_hypo_pts.data(), d_hypo_pts, hn*2*sizeof(float), cudaMemcpyDeviceToHost);
@@ -228,7 +228,7 @@ namespace ransacVoting{
             int* dummy_counts; // 不需要实际计数
             cudaMalloc(&dummy_counts, sizeof(int));
             launch_voting_cuda(
-                d_coords, d_direct, 
+                d_coords, d_direct,
                 d_final_hypo, dummy_counts,
                 d_final_inliers,
                 h, w, tn, 1, // hn=1
@@ -253,7 +253,7 @@ namespace ransacVoting{
             for (int i=0; i<tn; ++i) {
                 cv::Point2f pt = coords[i];
                 directions[i] = vertex_k.at<cv::Vec2f>(pt.y, pt.x);
-            }            
+            }
             output_points[k] = refinePointUsingInliersV2(coords, directions, final_inliers_bool);
 
             // 6. 清理资源
@@ -271,214 +271,5 @@ namespace ransacVoting{
         }
     }
 
-    void ransacVotingV4(
-        const cv::Mat& mask,
-        const std::vector<cv::Mat>& vertex,
-        std::vector<cv::Point2f>& output_points,
-        int round_hyp_num,
-        float inlier_thresh,
-        float confidence,
-        int max_iter,
-        int min_num,
-        int max_num 
-    ) {
-        std::mt19937 rng(0); // 固定随机数种子
-        std::vector<cv::Point2f> coords;
-        cv::findNonZero(mask, coords);
-
-        int tn = coords.size();
-        int vn = vertex.size();
-        output_points.resize(vn, cv::Point2f(0, 0));
-
-        if (tn < min_num) {
-            std::cerr << "Not enough foreground points for RANSAC!" << std::endl;
-            return;
-        }
-
-        // 如果前景点过多，进行下采样
-        if (tn > max_num) {
-            // filterForegroundPoints(coords, tn, max_num);
-            tn = coords.size(); // 更新前景点数量
-        }
-
-        for (int k = 0; k < vn; ++k) {
-            std::vector<cv::Point2f> hypothesis(round_hyp_num);
-            std::vector<int> inlier_counts(round_hyp_num, 0);
-            std::vector<std::vector<bool>> inliers(round_hyp_num, std::vector<bool>(tn, false));
-
-            float best_ratio = 0.0f;
-            cv::Point2f best_point(0, 0);
-            int hyp_num = 0;
-            // std::cout<< "vetex shape:"<<vertex[k].size()<<std::endl;
-            for (int iter = 0; iter < max_iter; ++iter) {
-                // 生成假设
-                for (int r = 0; r < round_hyp_num; ++r) {
-                    int idx = rng() % tn;
-                    cv::Point2f pt = coords[idx];
-                    cv::Vec2f offset = vertex[k].at<cv::Vec2f>(pt.y, pt.x);
-                    hypothesis[r] = cv::Point2f(pt.x + offset[0], pt.y + offset[1]);
-                }
-
-                // 假设投票
-                for (int i = 0; i < tn; ++i) {
-                    cv::Point2f pt = coords[i];
-                    cv::Vec2f offset = vertex[k].at<cv::Vec2f>(pt.y, pt.x);
-                    cv::Point2f projected_pt(pt.x + offset[0], pt.y + offset[1]);
-
-                    for (int r = 0; r < round_hyp_num; ++r) {
-                        if (cv::norm(projected_pt - hypothesis[r]) < inlier_thresh) {
-                            inlier_counts[r]++;
-                            inliers[r][i] = true;
-                        }
-                    }
-                }
-
-                // 找到最佳假设
-                int max_idx = std::distance(inlier_counts.begin(), std::max_element(inlier_counts.begin(), inlier_counts.end()));
-                float cur_ratio = static_cast<float>(inlier_counts[max_idx]) / tn;
-
-                if (cur_ratio > best_ratio) {
-                    best_ratio = cur_ratio;
-                    best_point = hypothesis[max_idx];
-                }
-
-                // 检查置信度
-                hyp_num += round_hyp_num;
-                if (1 - std::pow(1 - best_ratio * best_ratio, hyp_num) > confidence) {
-                    break;
-                }
-            }
-
-            // 使用最佳内点重新计算
-            if (!inliers.empty()) {
-                const auto& best_inlier_flags = inliers[std::distance(inlier_counts.begin(), std::max_element(inlier_counts.begin(), inlier_counts.end()))];
-                std::vector<cv::Vec2f> directions(tn);
-
-                for (int i = 0; i < tn; ++i) {
-                    cv::Point2f pt = coords[i];
-                    directions[i] = vertex[k].at<cv::Vec2f>(pt.y, pt.x);
-                }
-
-                output_points[k] = refinePointUsingInliersV2(coords, directions, best_inlier_flags);
-            } else {
-                output_points[k] = cv::Point2f(0, 0);
-            }
-        }
-    }
-
-    void ransacVotingV5(
-        const cv::Mat& mask,
-        const std::vector<cv::Mat>& vertex,
-        std::vector<cv::Point2f>& output_points,
-        int round_hyp_num,
-        float inlier_thresh,
-        float confidence,
-        int max_iter,
-        int min_num,
-        int max_num,
-        RansacState& state // 新增状态参数
-    ) {
-        std::mt19937 rng(0); // 固定随机数种子
-        std::vector<cv::Point2f> coords;
-        cv::findNonZero(mask, coords);
-
-        int tn = coords.size();
-        int vn = vertex.size();
-        output_points.resize(vn, cv::Point2f(0, 0));
-
-        if (tn < min_num) {
-            std::cerr << "Not enough foreground points for RANSAC!" << std::endl;
-            return;
-        }
-
-        // 如果前景点过多，进行下采样
-        if (tn > max_num) {
-            // filterForegroundPoints(coords, tn, max_num);
-            tn = coords.size(); // 更新前景点数量
-        }
-
-        for (int k = 0; k < vn; ++k) {
-            std::vector<cv::Point2f> hypothesis(round_hyp_num);
-            std::vector<int> inlier_counts(round_hyp_num, 0);
-            std::vector<std::vector<bool>> inliers(round_hyp_num, std::vector<bool>(tn, false));
-
-            float best_ratio = 0.0f;
-            cv::Point2f best_point(0, 0);
-            int hyp_num = 0;
-
-            // 如果是首次运行，初始化状态
-            if (!state.is_initialized) {
-                state.best_hypothesis.resize(vn, cv::Point2f(0, 0));
-                state.best_inlier_counts.resize(vn, 0);
-                state.best_inliers.resize(vn, std::vector<bool>(tn, false));
-                state.previous_output_points.resize(vn, cv::Point2f(0, 0));
-                state.is_initialized = true;
-            } else {
-                // 非首次运行，利用之前的状态作为初值
-                hypothesis[0] = state.best_hypothesis[k];
-                inlier_counts[0] = state.best_inlier_counts[k];
-                inliers[0] = state.best_inliers[k];
-            }
-
-            for (int iter = 0; iter < max_iter; ++iter) {
-                // 生成假设
-                for (int r = (state.is_initialized ? 1 : 0); r < round_hyp_num; ++r) {
-                    int idx = rng() % tn;
-                    cv::Point2f pt = coords[idx];
-                    cv::Vec2f offset = vertex[k].at<cv::Vec2f>(pt.y, pt.x);
-                    hypothesis[r] = cv::Point2f(pt.x + offset[0], pt.y + offset[1]);
-                }
-
-                // 假设投票
-                for (int i = 0; i < tn; ++i) {
-                    cv::Point2f pt = coords[i];
-                    cv::Vec2f offset = vertex[k].at<cv::Vec2f>(pt.y, pt.x);
-                    cv::Point2f projected_pt(pt.x + offset[0], pt.y + offset[1]);
-
-                    for (int r = 0; r < round_hyp_num; ++r) {
-                        if (cv::norm(projected_pt - hypothesis[r]) < inlier_thresh) {
-                            inlier_counts[r]++;
-                            inliers[r][i] = true;
-                        }
-                    }
-                }
-
-                // 找到最佳假设
-                int max_idx = std::distance(inlier_counts.begin(), std::max_element(inlier_counts.begin(), inlier_counts.end()));
-                float cur_ratio = static_cast<float>(inlier_counts[max_idx]) / tn;
-
-                if (cur_ratio > best_ratio) {
-                    best_ratio = cur_ratio;
-                    best_point = hypothesis[max_idx];
-                    state.best_hypothesis[k] = best_point; // 更新状态
-                    state.best_inlier_counts[k] = inlier_counts[max_idx];
-                    state.best_inliers[k] = inliers[max_idx];
-                }
-
-                // 检查置信度
-                hyp_num += round_hyp_num;
-                if (1 - std::pow(1 - best_ratio * best_ratio, hyp_num) > confidence) {
-                    break;
-                }
-            }
-
-            // 使用最佳内点重新计算
-            if (!inliers.empty()) {
-                const auto& best_inlier_flags = state.best_inliers[k];
-                std::vector<cv::Vec2f> directions(tn);
-
-                for (int i = 0; i < tn; ++i) {
-                    cv::Point2f pt = coords[i];
-                    directions[i] = vertex[k].at<cv::Vec2f>(pt.y, pt.x);
-                }
-
-                output_points[k] = refinePointUsingInliersV2(coords, directions, best_inlier_flags);
-            } else {
-                output_points[k] = cv::Point2f(0, 0);
-            }
-
-            state.previous_output_points[k] = output_points[k]; // 记录输出点
-        }
-    }
 
 }

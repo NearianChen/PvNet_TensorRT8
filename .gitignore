@@ -1,0 +1,6 @@
+.vscode/
+pytools/
+
+*.engine
+*.jpg
+*.npy
